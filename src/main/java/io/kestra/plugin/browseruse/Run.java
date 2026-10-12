@@ -81,8 +81,8 @@ import lombok.experimental.SuperBuilder;
                   - id: check
                     type: io.kestra.plugin.browseruse.Run
                     apiKey: "{{ secret('BROWSER_USE_API_KEY') }}"
-                    model: gpt-6-luna
-                    pollInterval: PT2S
+                    model: gpt-5.6-luna
+                    pollInterval: PT15S
                     prompt: Find the top story on https://news.ycombinator.com and reply with the title only.
                 """
         )
