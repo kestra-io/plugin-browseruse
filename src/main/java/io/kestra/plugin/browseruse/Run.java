@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
+import io.kestra.core.exceptions.KilledException;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Metric;
 import io.kestra.core.models.annotations.Plugin;
@@ -198,7 +199,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         var logger = runContext.logger();
         var config = renderConfig(runContext);
         if (isKilled.get()) {
-            throw new InterruptedException("Task was killed");
+            throw new KilledException("Task was killed");
         }
 
         try (var client = BrowserUseClient.open(
@@ -284,16 +285,11 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             if (isTerminal(status)) {
                 return status;
             }
-            try {
-                pause(pollInterval);
-            } catch (InterruptedException e) {
-                isKilled.set(true);
-                throw e;
-            }
+            pause(pollInterval);
         }
     }
 
-    private void pause(Duration delay) throws InterruptedException {
+    private void pause(Duration delay) {
         var end = System.nanoTime() + delay.toNanos();
         while (System.nanoTime() < end) {
             if (isKilled.get()) {
@@ -308,7 +304,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 isKilled.set(true);
-                throw e;
+                throw new KilledException("Task was killed");
             }
         }
     }
@@ -442,8 +438,8 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         );
     }
 
-    private static InterruptedException killed(String runId) {
-        return new InterruptedException(
+    private static KilledException killed(String runId) {
+        return new KilledException(
             "Browser Use run " + runId + " was cancelled because the task was killed or timed out. "
                 + "If it is still active in the Browser Use dashboard, cancel it there so it does not keep spending credits."
         );

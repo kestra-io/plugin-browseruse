@@ -18,6 +18,7 @@ import java.util.function.BooleanSupplier;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 
+import io.kestra.core.exceptions.KilledException;
 import io.kestra.core.http.HttpRequest;
 import io.kestra.core.http.client.HttpClient;
 import io.kestra.core.http.client.HttpClientRequestException;
@@ -120,7 +121,7 @@ final class BrowserUseClient implements AutoCloseable {
         var attempt = 1;
         while (true) {
             if (cancelled.getAsBoolean()) {
-                throw new InterruptedException("Task was killed");
+                throw new KilledException("Task was killed");
             }
             HttpResult result;
             try {
@@ -266,7 +267,7 @@ final class BrowserUseClient implements AutoCloseable {
         }
     }
 
-    private void pause(Duration delay) throws InterruptedException {
+    private void pause(Duration delay) {
         var end = System.nanoTime() + delay.toNanos();
         while (System.nanoTime() < end) {
             if (cancelled.getAsBoolean()) {
@@ -276,7 +277,12 @@ final class BrowserUseClient implements AutoCloseable {
             if (remainingMs <= 0) {
                 return;
             }
-            Thread.sleep(Math.min(200L, remainingMs));
+            try {
+                Thread.sleep(Math.min(200L, remainingMs));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new KilledException("Task was killed");
+            }
         }
     }
 

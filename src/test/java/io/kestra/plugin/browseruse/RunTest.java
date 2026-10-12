@@ -18,6 +18,7 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.http.Fault;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 
+import io.kestra.core.exceptions.KilledException;
 import io.kestra.core.junit.annotations.KestraTest;
 import io.kestra.core.models.executions.metrics.Counter;
 import io.kestra.core.models.property.Property;
@@ -464,7 +465,7 @@ class RunTest {
             } catch (TimeoutException e) {
                 throw new AssertionError("Run did not stop after cancellation. Events: " + server.getAllServeEvents(), e);
             } catch (ExecutionException e) {
-                assertThat(e.getCause(), instanceOf(InterruptedException.class));
+                assertThat(e.getCause(), instanceOf(KilledException.class));
                 assertThat(e.getCause().getMessage(), containsString(RUN_ID));
                 assertThat(e.getCause().getMessage(), containsString("cancelled"));
             }
