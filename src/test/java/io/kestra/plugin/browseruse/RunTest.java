@@ -90,10 +90,9 @@ class RunTest {
         assertThat(output.getRunId(), is(RUN_ID));
         assertThat(output.getStatus(), is("completed"));
         assertThat(output.getResult(), is("{\"price_eur\":49}"));
-        assertThat(output.getError(), nullValue());
         assertThat(output.getTotalInputTokens(), is(120L));
         assertThat(output.getTotalOutputTokens(), is(30L));
-        assertThat(output.getTotalCostUsd(), is("0.012300"));
+        assertThat(output.getTotalCostUsd(), is(new BigDecimal("0.012300")));
         assertThat(metric(runContext, "input.token.count"), is(120d));
         assertThat(metric(runContext, "output.token.count"), is(30d));
         assertThat(metric(runContext, "total.token.count"), is(150d));
@@ -138,7 +137,7 @@ class RunTest {
         var output = task.run(runContext);
 
         assertThat(output.getResult(), is("done"));
-        assertThat(output.getTotalCostUsd(), is("0.5"));
+        assertThat(output.getTotalCostUsd(), is(new BigDecimal("0.5")));
         assertThat(metric(runContext, "cost.usd"), closeTo(0.5d, 0.0000001d));
         var body = createBody();
         assertThat(body.get("task").asText(), is("find the pro price"));

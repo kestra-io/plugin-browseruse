@@ -394,13 +394,13 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         if (run.totalInputTokens() != null && run.totalOutputTokens() != null) {
             runContext.metric(Counter.of("total.token.count", run.totalInputTokens() + run.totalOutputTokens()));
         }
-        if (run.totalCostUsd() == null) {
+        var cost = decimalCost(run.totalCostUsd());
+        if (run.totalCostUsd() != null && cost == null) {
+            runContext.logger().warn("Browser Use run {} returned a cost that is not a number: {}", run.id(), run.totalCostUsd());
             return;
         }
-        try {
-            runContext.metric(Counter.of("cost.usd", new BigDecimal(run.totalCostUsd()).doubleValue()));
-        } catch (NumberFormatException e) {
-            runContext.logger().warn("Browser Use run {} returned a cost that is not a number: {}", run.id(), run.totalCostUsd());
+        if (cost != null) {
+            runContext.metric(Counter.of("cost.usd", cost.doubleValue()));
         }
     }
 
@@ -409,11 +409,21 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             .runId(runId)
             .status(summary.status())
             .result(summary.result())
-            .error(summary.error())
             .totalInputTokens(summary.totalInputTokens())
             .totalOutputTokens(summary.totalOutputTokens())
-            .totalCostUsd(summary.totalCostUsd())
+            .totalCostUsd(decimalCost(summary.totalCostUsd()))
             .build();
+    }
+
+    private static BigDecimal decimalCost(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static IllegalStateException terminalFailure(String runId, BrowserUseClient.RunPayload summary) {
@@ -526,12 +536,6 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         private final String result;
 
         @Schema(
-            title = "Run error",
-            description = "Error reported by Browser Use. Null when the run completed. A failed or cancelled run fails the task before outputs are returned."
-        )
-        private final String error;
-
-        @Schema(
             title = "Input tokens",
             description = "Input tokens reported for the run"
         )
@@ -545,8 +549,8 @@ public class Run extends Task implements RunnableTask<Run.Output> {
 
         @Schema(
             title = "Total cost in USD",
-            description = "Total cost reported for the run, as a decimal string"
+            description = "Total cost reported for the run"
         )
-        private final String totalCostUsd;
+        private final BigDecimal totalCostUsd;
     }
 }
