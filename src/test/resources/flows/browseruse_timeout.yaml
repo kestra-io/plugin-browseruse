@@ -1,0 +1,12 @@
+# Worker sanity check. RunTimeoutTest serves the API on this port.
+id: browseruse_timeout
+namespace: company.team
+
+tasks:
+  - id: run
+    type: io.kestra.plugin.browseruse.Run
+    apiKey: bu_test
+    baseUrl: http://localhost:18234/api/v4
+    timeout: PT2S
+    pollInterval: PT1S
+    prompt: Keep checking the page until the task timeout cancels this run.
