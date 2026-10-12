@@ -366,14 +366,21 @@ class RunTest {
         server.stubFor(get(urlPathMatching("/api/v4/runs/" + RUN_ID + "/status"))
             .willReturn(okJson("{\"status\":\"running\"}")));
         server.stubFor(post(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))
-            .willReturn(okJson("{\"id\":\"" + RUN_ID + "\",\"status\":\"cancelled\"}")));
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"id\":\"" + RUN_ID + "\",\"status\":\"cancelled\"}")
+                .withFixedDelay(2_000)));
 
         var task = task(Property.ofValue("find the price"));
         var executor = Executors.newSingleThreadExecutor();
         try {
             var future = executor.submit(() -> task.run(runContextFactory.of()));
             waitUntil(() -> !server.findAll(getRequestedFor(urlPathMatching("/api/v4/runs/.*/status"))).isEmpty());
+            var started = System.nanoTime();
             signal.accept(task);
+            var elapsedMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+            assertTrue(elapsedMs < 500, "kill()/stop() blocked for " + elapsedMs + "ms");
             try {
                 future.get(10, TimeUnit.SECONDS);
                 throw new AssertionError("Run completed instead of being cancelled. Events: " + server.getAllServeEvents());
@@ -384,6 +391,7 @@ class RunTest {
                 assertThat(e.getCause().getMessage(), containsString(RUN_ID));
                 assertThat(e.getCause().getMessage(), containsString("cancelled"));
             }
+            waitUntil(() -> !server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/.*/cancel"))).isEmpty());
             assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
             assertThat(server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/.*/cancel"))), hasSize(1));
         } finally {

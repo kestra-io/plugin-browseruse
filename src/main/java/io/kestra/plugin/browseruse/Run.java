@@ -25,6 +25,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import lombok.AccessLevel;
 import lombok.Builder;
@@ -114,6 +115,8 @@ import lombok.experimental.SuperBuilder;
     }
 )
 public class Run extends Task implements RunnableTask<Run.Output> {
+    private static final Logger LOG = LoggerFactory.getLogger(Run.class);
+
     static final String DEFAULT_BASE_URL = "https://api.browser-use.com/api/v4";
     static final Duration DEFAULT_POLL_INTERVAL = Duration.ofSeconds(2);
     static final Duration MIN_POLL_INTERVAL = Duration.ofSeconds(1);
@@ -188,7 +191,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
     @JsonIgnore
     @Getter(AccessLevel.NONE)
     @Builder.Default
-    private final AtomicBoolean cancelSent = new AtomicBoolean(false);
+    private final AtomicBoolean cancelDispatched = new AtomicBoolean(false);
 
     @Override
     public Output run(RunContext runContext) throws Exception {
@@ -217,9 +220,9 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             logger.info("Created Browser Use run {}.", runId);
 
             killable.set(() -> cancelRun(runContext, config.baseUrl(), config.apiKey(), runId));
-            // A kill that arrived before the id existed already consumed its one signal, so cancel here as well.
+            // A kill that arrived before the id existed found nothing to cancel, so dispatch it now.
             if (isKilled.get()) {
-                cancelIfStarted();
+                dispatchRemoteCancel();
                 throw killed(runId);
             }
 
@@ -227,18 +230,18 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             try {
                 status = poll(client, logger, runId, config.pollInterval());
             } catch (InterruptedException e) {
-                cancelIfStarted();
+                dispatchRemoteCancel();
                 Thread.currentThread().interrupt();
                 throw killed(runId);
             }
             if (isKilled.get()) {
-                cancelIfStarted();
+                dispatchRemoteCancel();
                 throw killed(runId);
             }
 
             var summary = client.readRun(runId);
             if (isKilled.get() && (summary.status() == null || !"completed".equalsIgnoreCase(summary.status()))) {
-                cancelIfStarted();
+                dispatchRemoteCancel();
                 throw killed(runId);
             }
             if (summary.status() == null || !isTerminal(summary.status())) {
@@ -428,17 +431,28 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         );
     }
 
-    private void cancelIfStarted() {
-        var action = killable.get();
-        if (action != null) {
-            action.run();
+    /**
+     * Sends the cancel on a background thread. {@code kill()} and {@code stop()} run on the worker
+     * lifecycle thread and must not block: in Kestra 1.3.39 the worker calls {@code kill()} inside a
+     * synchronized block. Delivery is best-effort. An abrupt worker exit can cut the request off
+     * before it lands.
+     */
+    private void dispatchRemoteCancel() {
+        var remoteCancel = killable.get();
+        // Nothing to cancel yet. Leave cancelDispatched unset, or the dispatch once the run id is
+        // known would be skipped.
+        if (remoteCancel == null || !cancelDispatched.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Thread.ofVirtual().name("browser-use-run-cancel").start(remoteCancel);
+        } catch (Exception e) {
+            // kill() and stop() must never throw. cancelRun logs the HTTP outcome on the execution.
+            LOG.warn("Failed to dispatch the Browser Use run cancellation", e);
         }
     }
 
     private void cancelRun(RunContext runContext, String baseUrl, String apiKey, String runId) {
-        if (!cancelSent.compareAndSet(false, true)) {
-            return;
-        }
         try (var client = BrowserUseClient.open(
             runContext,
             baseUrl,
@@ -451,25 +465,25 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             client.cancel(runId);
             runContext.logger().info("Cancelled Browser Use run {}.", runId);
         } catch (Exception e) {
-            cancelSent.set(false);
             runContext.logger().warn("Failed to cancel Browser Use run {}: {}", runId, e.getMessage());
         }
     }
 
+    private void cancel() {
+        if (!isKilled.compareAndSet(false, true)) {
+            return;
+        }
+        dispatchRemoteCancel();
+    }
+
     @Override
     public void kill() {
-        if (isKilled.compareAndSet(false, true)) {
-            try {
-                cancelIfStarted();
-            } catch (Exception e) {
-                // kill() runs on another thread and must not escape into the worker.
-            }
-        }
+        cancel();
     }
 
     @Override
     public void stop() {
-        kill();
+        cancel();
     }
 
     private record Config(
