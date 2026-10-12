@@ -1,10 +1,10 @@
 {
-  "name": "plugin-template",
+  "name": "plugin-browseruse",
   "build": {
     "context": ".",
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspaces/plugin-template",
+  "workspaceFolder": "/workspaces/plugin-browseruse",
   "forwardPorts": [8080],
   "customizations": {
     "vscode": {
