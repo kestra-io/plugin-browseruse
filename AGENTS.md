@@ -2,14 +2,13 @@
 
 ## What
 
-- Provides plugin components under `io.kestra.plugin.browseruse`.
-- Includes classes such as `Example`, `Trigger`.
+- Provides `io.kestra.plugin.browseruse.Run`, a task that runs a Browser Use cloud agent and waits for its result.
 
 ## Why
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+- What user problem does this solve? Flows need a cloud browser agent for sites that have no API and cannot be scripted ahead of time, without each flow reimplementing the create, poll, and cancel loop.
+- Why would a team adopt this plugin in a workflow? `Run` waits for the agent, returns the answer and the cost, and cancels the remote run when the execution is killed or times out.
+- What operational/business outcome does it enable? Price and availability checks, and other unscripted browser work, stay in the same flow as the tasks that use the answer, and a stopped execution does not keep spending Browser Use credits.
 
 ## How
 
@@ -25,7 +24,7 @@ Infrastructure dependencies (Docker Compose services):
 
 ### Key Plugin Classes
 
-- `io.kestra.plugin.browseruse.Example`
+- `io.kestra.plugin.browseruse.Run`
 
 ### Project Structure
 
