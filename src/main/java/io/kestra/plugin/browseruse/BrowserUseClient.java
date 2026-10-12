@@ -33,6 +33,7 @@ import org.slf4j.Logger;
  */
 final class BrowserUseClient implements AutoCloseable {
     static final int MAX_ATTEMPTS = 5;
+    static final int CANCEL_ATTEMPTS = 3;
 
     private static final Duration MAX_RETRY_DELAY = Duration.ofMinutes(5);
     private static final Duration DEFAULT_RETRY_DELAY = Duration.ofSeconds(2);
@@ -106,13 +107,30 @@ final class BrowserUseClient implements AutoCloseable {
 
     /**
      * Best-effort cancel. A 404 means the run is already gone.
+     * A 503 is retried twice, and {@code Retry-After} is read as a number of seconds.
      */
     void cancel(String runId) throws Exception {
-        var result = execute(request("POST", runPath(runId) + "/cancel", null));
-        if (result.code() == 404 || result.code() < 300) {
-            return;
+        var label = "POST /runs/" + runId + "/cancel";
+        var attempt = 1;
+        while (true) {
+            var result = execute(request("POST", runPath(runId) + "/cancel", null));
+            if (result.code() == 404 || result.code() < 300) {
+                return;
+            }
+            if (result.code() != 503 || attempt >= CANCEL_ATTEMPTS) {
+                throw httpFailure(label, result.code(), result.body(), false);
+            }
+            var wait = retryDelay(result);
+            logger.warn(
+                "Browser Use {} returned 503. Waiting {} before retry {} of {}.",
+                label,
+                wait,
+                attempt,
+                CANCEL_ATTEMPTS
+            );
+            pause(wait, cancelled);
+            attempt++;
         }
-        throw httpFailure("POST /runs/" + runId + "/cancel", result.code(), result.body(), false);
     }
 
     private RunPayload send(String method, String path, Map<String, Object> body, String label, boolean createCall) throws Exception {
@@ -294,6 +312,7 @@ final class BrowserUseClient implements AutoCloseable {
             case 409 -> "The session already has an active run. Wait for it to finish or cancel it in the Browser Use dashboard.";
             case 400, 422 -> "The request was rejected. Check the prompt, model, and maxCostUsd.";
             case 429 -> "The project is at its request rate or concurrency limit. Wait and retry the task, or raise the project concurrency.";
+            case 503 -> "The service is temporarily unavailable.";
             default -> createCall
                 ? "The run may already exist. Check the Browser Use dashboard before starting another one, so you do not bill a second run."
                 : "The read was retried and still failed.";

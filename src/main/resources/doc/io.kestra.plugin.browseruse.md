@@ -22,7 +22,7 @@ This task returns the agent's `result` text. Ask for JSON in the prompt, then pa
 
 ## Stop a run
 
-A client timeout does not cancel the agent, and a running agent keeps spending credits. The task calls `POST /runs/{id}/cancel` when the execution is killed or times out, and also when the task fails after the run has been created.
+A client timeout does not cancel the agent, and a running agent keeps spending credits. The task calls `POST /runs/{id}/cancel` when the execution is killed or times out, and also when the task fails after the run has been created. A 503 from cancel is retried twice, and `Retry-After` is read as a number of seconds.
 
 `429` responses are retried and `Retry-After` is honored. Status and full-run reads also retry HTTP 5xx and network errors. `POST /runs` is not retried after a network error or a 5xx, because that call may already have created a billed run.
 

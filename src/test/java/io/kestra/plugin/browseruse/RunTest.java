@@ -357,6 +357,66 @@ class RunTest {
     }
 
     @Test
+    void shouldRetryCancelWhenTheApiReturns503() throws Exception {
+        stubCreate();
+        server.stubFor(get(urlPathMatching("/api/v4/runs/" + RUN_ID + "/status"))
+            .willReturn(okJson("{\"status\":\"running\"}")));
+        server.stubFor(post(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))
+            .inScenario("cancel")
+            .whenScenarioStateIs(Scenario.STARTED)
+            .willReturn(aResponse().withStatus(503).withHeader("Retry-After", "0").withBody("{\"detail\":\"unavailable\"}"))
+            .willSetStateTo("done"));
+        server.stubFor(post(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))
+            .inScenario("cancel")
+            .whenScenarioStateIs("done")
+            .willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"id\":\"" + RUN_ID + "\",\"status\":\"cancelled\"}")));
+
+        var task = task(Property.ofValue("find the price"));
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var future = executor.submit(() -> task.run(runContextFactory.of()));
+            waitUntil(() -> !server.findAll(getRequestedFor(urlPathMatching("/api/v4/runs/.*/status"))).isEmpty());
+            task.kill();
+            waitUntil(() -> cancelCount() >= 2);
+            Thread.sleep(300);
+            assertThat(cancelCount(), is(2));
+            assertThat(future.get(10, TimeUnit.SECONDS), nullValue());
+        } catch (ExecutionException e) {
+            assertThat(e.getCause(), instanceOf(KilledException.class));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldStopRetryingCancelAfterTwoRetries() throws Exception {
+        stubCreate();
+        server.stubFor(get(urlPathMatching("/api/v4/runs/" + RUN_ID + "/status"))
+            .willReturn(okJson("{\"status\":\"running\"}")));
+        server.stubFor(post(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))
+            .willReturn(aResponse().withStatus(503).withHeader("Retry-After", "0").withBody("{\"detail\":\"unavailable\"}")));
+
+        var task = task(Property.ofValue("find the price"));
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            executor.submit(() -> task.run(runContextFactory.of()));
+            waitUntil(() -> !server.findAll(getRequestedFor(urlPathMatching("/api/v4/runs/.*/status"))).isEmpty());
+            task.kill();
+            waitUntil(() -> cancelCount() >= BrowserUseClient.CANCEL_ATTEMPTS);
+            var deadline = System.nanoTime() + Duration.ofMillis(1500).toNanos();
+            while (System.nanoTime() < deadline) {
+                assertThat(cancelCount(), lessThanOrEqualTo(BrowserUseClient.CANCEL_ATTEMPTS * 2));
+                Thread.sleep(50);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void shouldCancelTheRunWhenKilled() throws Exception {
         assertCancellation(Run::kill);
     }
@@ -475,6 +535,10 @@ class RunTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    private int cancelCount() {
+        return server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))).size();
     }
 
     private void assertRunCancelled() throws InterruptedException {
