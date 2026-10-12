@@ -6,17 +6,15 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import io.kestra.core.exceptions.KilledException;
 import io.kestra.core.http.HttpRequest;
@@ -137,7 +135,7 @@ final class BrowserUseClient implements AutoCloseable {
                     attempt,
                     MAX_ATTEMPTS
                 );
-                pause(DEFAULT_RETRY_DELAY);
+                pause(DEFAULT_RETRY_DELAY, cancelled);
                 attempt++;
                 continue;
             } catch (RuntimeException e) {
@@ -154,7 +152,7 @@ final class BrowserUseClient implements AutoCloseable {
                     attempt,
                     MAX_ATTEMPTS
                 );
-                pause(DEFAULT_RETRY_DELAY);
+                pause(DEFAULT_RETRY_DELAY, cancelled);
                 attempt++;
                 continue;
             }
@@ -174,7 +172,7 @@ final class BrowserUseClient implements AutoCloseable {
                     attempt,
                     MAX_ATTEMPTS
                 );
-                pause(wait);
+                pause(wait, cancelled);
                 attempt++;
                 continue;
             }
@@ -219,22 +217,24 @@ final class BrowserUseClient implements AutoCloseable {
 
     private Duration retryDelay(HttpResult result) {
         if (result.retryAfter().isPresent()) {
-            var parsed = parseRetryAfter(result.retryAfter().get());
+            var parsed = seconds(result.retryAfter().get());
             if (parsed != null) {
                 return cap(parsed);
             }
         }
-        if (result.body() != null && !result.body().isBlank()) {
-            try {
-                var field = JacksonMapper.ofJson().readTree(result.body()).get("retry_after_seconds");
-                if (field != null && field.isNumber()) {
-                    return cap(Duration.ofSeconds(Math.max(0, field.asLong())));
-                }
-            } catch (Exception ignored) {
-                // A non-JSON 429 body falls through to the default delay.
-            }
+        var body = read(result.body(), ErrorBody.class);
+        if (body != null && body.retryAfterSeconds() != null) {
+            return cap(Duration.ofSeconds(Math.max(0, body.retryAfterSeconds())));
         }
         return DEFAULT_RETRY_DELAY;
+    }
+
+    private static Duration seconds(String header) {
+        try {
+            return Duration.ofSeconds(Math.max(0, Long.parseLong(header.trim())));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private Duration cap(Duration delay) {
@@ -250,27 +250,10 @@ final class BrowserUseClient implements AutoCloseable {
         return delay.isNegative() ? Duration.ZERO : delay;
     }
 
-    private static Duration parseRetryAfter(String header) {
-        var raw = header.trim();
-        if (raw.isEmpty()) {
-            return null;
-        }
-        try {
-            return Duration.ofSeconds(Math.max(0, Long.parseLong(raw)));
-        } catch (NumberFormatException ignored) {
-            try {
-                var when = ZonedDateTime.parse(raw, DateTimeFormatter.RFC_1123_DATE_TIME);
-                return Duration.between(Instant.now(), when.toInstant());
-            } catch (DateTimeParseException e) {
-                return null;
-            }
-        }
-    }
-
-    private void pause(Duration delay) {
+    static void pause(Duration delay, BooleanSupplier stop) {
         var end = System.nanoTime() + delay.toNanos();
         while (System.nanoTime() < end) {
-            if (cancelled.getAsBoolean()) {
+            if (stop.getAsBoolean()) {
                 return;
             }
             var remainingMs = (end - System.nanoTime()) / 1_000_000L;
@@ -287,68 +270,18 @@ final class BrowserUseClient implements AutoCloseable {
     }
 
     private static RunPayload parse(String body, String label) {
-        final JsonNode node;
         try {
-            node = JacksonMapper.ofJson().readTree(body);
+            return JacksonMapper.ofJson().readValue(body, RunPayload.class);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(
                 "Browser Use returned a response for " + label + " that is not valid JSON. " + snippet(body),
                 e
             );
         }
-        if (!node.isObject()) {
-            throw new IllegalStateException(
-                "Browser Use returned a response for " + label + " that is not a JSON object. " + snippet(body)
-            );
-        }
-        return new RunPayload(
-            text(node, "id"),
-            text(node, "status"),
-            text(node, "result"),
-            text(node, "error"),
-            longValue(node, "totalInputTokens"),
-            longValue(node, "totalOutputTokens"),
-            cost(node)
-        );
     }
 
     private static String runPath(String runId) {
         return "/runs/" + URLEncoder.encode(runId, StandardCharsets.UTF_8).replace("+", "%20");
-    }
-
-    private static String text(JsonNode node, String field) {
-        var value = node.get(field);
-        if (value == null || value.isNull()) {
-            return null;
-        }
-        if (value.isTextual()) {
-            var text = value.asText();
-            return text.isBlank() ? null : text;
-        }
-        if (value.isNumber() || value.isBoolean()) {
-            return value.asText();
-        }
-        return value.toString();
-    }
-
-    private static Long longValue(JsonNode node, String field) {
-        var value = node.get(field);
-        if (value == null || value.isNull() || !value.isNumber()) {
-            return null;
-        }
-        return value.asLong();
-    }
-
-    private static String cost(JsonNode node) {
-        var value = node.get("totalCostUsd");
-        if (value == null || value.isNull()) {
-            return null;
-        }
-        if (value.isNumber()) {
-            return value.decimalValue().toPlainString();
-        }
-        var text = value.asText();
-        return text == null || text.isBlank() ? null : text;
     }
 
     private static IllegalStateException httpFailure(String label, int code, String body, boolean createCall) {
@@ -403,33 +336,42 @@ final class BrowserUseClient implements AutoCloseable {
         if (body == null || body.isBlank()) {
             return "no response body";
         }
-        try {
-            var node = JacksonMapper.ofJson().readTree(body);
-            var detail = node.get("detail");
-            if (detail != null && detail.isTextual()) {
-                return detail.asText();
-            }
-            if (detail != null && detail.isArray()) {
-                var messages = new StringBuilder();
-                for (var item : detail) {
-                    if (item.hasNonNull("msg")) {
-                        if (!messages.isEmpty()) {
-                            messages.append("; ");
-                        }
-                        messages.append(item.get("msg").asText());
+        var parsed = read(body, ErrorBody.class);
+        if (parsed == null) {
+            return snippet(body);
+        }
+        if (parsed.detail() instanceof String text && !text.isBlank()) {
+            return text;
+        }
+        if (parsed.detail() instanceof List<?> items) {
+            var messages = new StringBuilder();
+            for (var item : items) {
+                if (item instanceof Map<?, ?> map && map.get("msg") instanceof String msg && !msg.isBlank()) {
+                    if (!messages.isEmpty()) {
+                        messages.append("; ");
                     }
-                }
-                if (!messages.isEmpty()) {
-                    return messages.toString();
+                    messages.append(msg);
                 }
             }
-            if (node.hasNonNull("error") && node.get("error").isTextual()) {
-                return node.get("error").asText();
+            if (!messages.isEmpty()) {
+                return messages.toString();
             }
-        } catch (Exception ignored) {
-            // Fall through to a trimmed copy of the raw body.
+        }
+        if (parsed.error() != null && !parsed.error().isBlank()) {
+            return parsed.error();
         }
         return snippet(body);
+    }
+
+    private static <T> T read(String body, Class<T> type) {
+        if (body == null || body.isBlank()) {
+            return null;
+        }
+        try {
+            return JacksonMapper.ofJson().readValue(body, type);
+        } catch (JsonProcessingException e) {
+            return null;
+        }
     }
 
     private static String snippet(String body) {
@@ -448,6 +390,7 @@ final class BrowserUseClient implements AutoCloseable {
     private record HttpResult(int code, String body, Optional<String> retryAfter) {
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     record RunPayload(
         String id,
         String status,
@@ -455,7 +398,15 @@ final class BrowserUseClient implements AutoCloseable {
         String error,
         Long totalInputTokens,
         Long totalOutputTokens,
-        String totalCostUsd
+        BigDecimal totalCostUsd
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ErrorBody(
+        Object detail,
+        String error,
+        @JsonProperty("retry_after_seconds") Long retryAfterSeconds
     ) {
     }
 }

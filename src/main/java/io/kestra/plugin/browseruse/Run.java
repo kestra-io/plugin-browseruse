@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -285,61 +284,34 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             if (isTerminal(status)) {
                 return status;
             }
-            pause(pollInterval);
-        }
-    }
-
-    private void pause(Duration delay) {
-        var end = System.nanoTime() + delay.toNanos();
-        while (System.nanoTime() < end) {
-            if (isKilled.get()) {
-                return;
-            }
-            var remainingMs = (end - System.nanoTime()) / 1_000_000L;
-            if (remainingMs <= 0) {
-                return;
-            }
-            try {
-                Thread.sleep(Math.min(200L, remainingMs));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                isKilled.set(true);
-                throw new KilledException("Task was killed");
-            }
+            BrowserUseClient.pause(pollInterval, isKilled::get);
         }
     }
 
     private Config renderConfig(RunContext runContext) throws Exception {
         var rApiKey = requireText(
-            render(runContext, apiKey, String.class).orElse(null),
+            runContext.render(apiKey).as(String.class).orElse(null),
             "apiKey",
             "Set apiKey to a Browser Use API key, for example {{ secret('BROWSER_USE_API_KEY') }}."
         );
         var rPrompt = requireText(
-            render(runContext, prompt, String.class).orElse(null),
+            runContext.render(prompt).as(String.class).orElse(null),
             "prompt",
             "Set prompt to the instruction the browser agent should carry out."
         );
-        var rModel = render(runContext, model, String.class).filter(value -> !value.isBlank()).map(String::trim).orElse(null);
-        var rMaxCost = render(runContext, maxCostUsd, BigDecimal.class).orElse(null);
+        var rModel = runContext.render(model).as(String.class).filter(value -> !value.isBlank()).map(String::trim).orElse(null);
+        var rMaxCost = runContext.render(maxCostUsd).as(BigDecimal.class).orElse(null);
         if (rMaxCost != null && rMaxCost.signum() <= 0) {
             throw new IllegalArgumentException("maxCostUsd must be greater than 0. Got " + rMaxCost + ".");
         }
-        var rPoll = render(runContext, pollInterval, Duration.class).orElse(DEFAULT_POLL_INTERVAL);
+        var rPoll = runContext.render(pollInterval).as(Duration.class).orElse(DEFAULT_POLL_INTERVAL);
         if (rPoll.compareTo(MIN_POLL_INTERVAL) < 0 || rPoll.compareTo(MAX_POLL_INTERVAL) > 0) {
             throw new IllegalArgumentException(
                 "pollInterval must be between PT1S and PT5M. Got " + rPoll + "."
             );
         }
-        var rBaseUrl = normalizeBaseUrl(render(runContext, baseUrl, String.class).orElse(DEFAULT_BASE_URL));
+        var rBaseUrl = normalizeBaseUrl(runContext.render(baseUrl).as(String.class).orElse(DEFAULT_BASE_URL));
         return new Config(rApiKey, rPrompt, rModel, rMaxCost, rPoll, rBaseUrl);
-    }
-
-    private static <T> Optional<T> render(RunContext runContext, Property<T> property, Class<T> type) throws Exception {
-        if (property == null) {
-            return Optional.empty();
-        }
-        return runContext.render(property).as(type);
     }
 
     private static String requireText(String value, String name, String hint) {
@@ -390,13 +362,8 @@ public class Run extends Task implements RunnableTask<Run.Output> {
         if (run.totalInputTokens() != null && run.totalOutputTokens() != null) {
             runContext.metric(Counter.of("total.token.count", run.totalInputTokens() + run.totalOutputTokens()));
         }
-        var cost = decimalCost(run.totalCostUsd());
-        if (run.totalCostUsd() != null && cost == null) {
-            runContext.logger().warn("Browser Use run {} returned a cost that is not a number: {}", run.id(), run.totalCostUsd());
-            return;
-        }
-        if (cost != null) {
-            runContext.metric(Counter.of("cost.usd", cost.doubleValue()));
+        if (run.totalCostUsd() != null) {
+            runContext.metric(Counter.of("cost.usd", run.totalCostUsd().doubleValue()));
         }
     }
 
@@ -407,19 +374,8 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             .result(summary.result())
             .totalInputTokens(summary.totalInputTokens())
             .totalOutputTokens(summary.totalOutputTokens())
-            .totalCostUsd(decimalCost(summary.totalCostUsd()))
+            .totalCostUsd(summary.totalCostUsd())
             .build();
-    }
-
-    private static BigDecimal decimalCost(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return new BigDecimal(value);
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 
     private static IllegalStateException terminalFailure(String runId, BrowserUseClient.RunPayload summary) {
