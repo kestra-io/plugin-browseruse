@@ -126,24 +126,49 @@ final class BrowserUseClient implements AutoCloseable {
             try {
                 result = execute(request(method, path, body));
             } catch (HttpClientRequestException e) {
-                throw transportFailure(label, e, createCall);
-            } catch (RuntimeException e) {
-                if (e.getCause() instanceof IOException) {
+                if (!retryTransport(createCall, attempt)) {
                     throw transportFailure(label, e, createCall);
                 }
-                throw e;
+                logger.warn(
+                    "Browser Use {} failed ({}). Retrying attempt {} of {}.",
+                    label,
+                    reason(e),
+                    attempt,
+                    MAX_ATTEMPTS
+                );
+                pause(DEFAULT_RETRY_DELAY);
+                attempt++;
+                continue;
+            } catch (RuntimeException e) {
+                if (!(e.getCause() instanceof IOException)) {
+                    throw e;
+                }
+                if (!retryTransport(createCall, attempt)) {
+                    throw transportFailure(label, e, createCall);
+                }
+                logger.warn(
+                    "Browser Use {} failed ({}). Retrying attempt {} of {}.",
+                    label,
+                    reason(e),
+                    attempt,
+                    MAX_ATTEMPTS
+                );
+                pause(DEFAULT_RETRY_DELAY);
+                attempt++;
+                continue;
             }
 
-            // 429 is retried here, including after the HTTP client has already tried once.
-            // A transport failure is not retried: for POST /runs the run may already exist.
-            if (result.code() == 429) {
+            // GET is safe to repeat. POST /runs is not: a 5xx or a dropped response may already have created the run.
+            // 429 is retried for both. The HTTP client may also retry 429 once before this loop sees it.
+            if (retryStatus(result.code(), createCall)) {
                 if (attempt >= MAX_ATTEMPTS) {
                     throw httpFailure(label, result.code(), result.body(), createCall);
                 }
                 var wait = retryDelay(result);
                 logger.warn(
-                    "Browser Use rate limited {}. Waiting {} before retry {} of {}.",
+                    "Browser Use {} returned {}. Waiting {} before retry {} of {}.",
                     label,
+                    result.code(),
                     wait,
                     attempt,
                     MAX_ATTEMPTS
@@ -332,14 +357,29 @@ final class BrowserUseClient implements AutoCloseable {
             case 429 -> "The project is at its request rate or concurrency limit. Wait and retry the task, or raise the project concurrency.";
             default -> createCall
                 ? "The run may already exist. Check the Browser Use dashboard before starting another one, so you do not bill a second run."
-                : "Check the run in the Browser Use dashboard before retrying this task, so you do not start a second billed run.";
+                : "The read was retried and still failed.";
         };
         return new IllegalStateException("Browser Use " + label + " returned " + code + " (" + errorDetail(body) + "). " + hint);
     }
 
+    private static boolean retryTransport(boolean createCall, int attempt) {
+        return !createCall && attempt < MAX_ATTEMPTS;
+    }
+
+    private static boolean retryStatus(int code, boolean createCall) {
+        if (code == 429) {
+            return true;
+        }
+        return !createCall && code >= 500;
+    }
+
+    private static String reason(Exception exception) {
+        return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+    }
+
     // A transport error on POST /runs is not retried: the run may already exist, and a second call would bill twice.
     private static IllegalStateException transportFailure(String label, Exception exception, boolean createCall) {
-        var reason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        var reason = reason(exception);
         if (createCall) {
             return new IllegalStateException(
                 "Creating the Browser Use run failed (" + reason + ") and was not retried, because a retry could start a second billed run. "
@@ -348,8 +388,7 @@ final class BrowserUseClient implements AutoCloseable {
             );
         }
         return new IllegalStateException(
-            "Browser Use " + label + " failed (" + reason + "). The run may still be going. "
-                + "Check it in the Browser Use dashboard before retrying this task, so you do not start a second billed run.",
+            "Browser Use " + label + " failed (" + reason + ") after " + MAX_ATTEMPTS + " attempts.",
             exception
         );
     }

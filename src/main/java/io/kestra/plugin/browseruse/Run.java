@@ -44,7 +44,7 @@ import lombok.experimental.SuperBuilder;
     title = "Run a Browser Use cloud agent",
     description = "Gives a [Browser Use](https://browser-use.com) cloud agent a task in plain language, waits until the run finishes, and returns its answer. "
         + "The task creates a run, polls `GET /runs/{id}/status` until the run is completed, failed, or cancelled, then reads the full run once. "
-        + "A failed or cancelled run fails the task. Killing or timing out the execution cancels the remote run so it does not keep spending credits. "
+        + "A failed or cancelled run fails the task. If the task fails after the run is created, it cancels that run so the agent does not keep spending credits. "
         + "API v4 returns `result` as text. Ask for JSON in the prompt and parse it with `fromJson`. v4 does not accept an output schema."
 )
 @Plugin(
@@ -210,53 +210,61 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             Duration.ofSeconds(10),
             Duration.ofSeconds(30)
         )) {
-            var created = client.createRun(config.prompt(), config.model(), config.maxCostUsd());
-            var runId = created.id();
-            if (runId == null || runId.isBlank()) {
-                throw new IllegalStateException(
-                    "Browser Use accepted the create call but returned no run id. Check the dashboard before starting another run."
-                );
-            }
-            logger.info("Created Browser Use run {}.", runId);
-
-            killable.set(() -> cancelRun(runContext, config.baseUrl(), config.apiKey(), runId));
-            // A kill that arrived before the id existed found nothing to cancel, so dispatch it now.
-            if (isKilled.get()) {
-                dispatchRemoteCancel();
-                throw killed(runId);
-            }
-
-            final String status;
+            String createdRunId = null;
             try {
-                status = poll(client, logger, runId, config.pollInterval());
-            } catch (InterruptedException e) {
-                dispatchRemoteCancel();
-                Thread.currentThread().interrupt();
-                throw killed(runId);
-            }
-            if (isKilled.get()) {
-                dispatchRemoteCancel();
-                throw killed(runId);
-            }
+                var created = client.createRun(config.prompt(), config.model(), config.maxCostUsd());
+                var id = created.id();
+                if (id == null || id.isBlank()) {
+                    throw new IllegalStateException(
+                        "Browser Use accepted the create call but returned no run id. Check the dashboard before starting another run."
+                    );
+                }
+                final var runId = id;
+                createdRunId = runId;
+                logger.info("Created Browser Use run {}.", runId);
 
-            var summary = client.readRun(runId);
-            if (isKilled.get() && (summary.status() == null || !"completed".equalsIgnoreCase(summary.status()))) {
-                dispatchRemoteCancel();
-                throw killed(runId);
+                killable.set(() -> cancelRun(runContext, config.baseUrl(), config.apiKey(), runId));
+                // A kill that arrived before the id existed found nothing to cancel, so dispatch it now.
+                if (isKilled.get()) {
+                    throw killed(runId);
+                }
+
+                final String status;
+                try {
+                    status = poll(client, logger, runId, config.pollInterval());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw killed(runId);
+                }
+                if (isKilled.get()) {
+                    throw killed(runId);
+                }
+
+                var summary = client.readRun(runId);
+                if (isKilled.get() && (summary.status() == null || !"completed".equalsIgnoreCase(summary.status()))) {
+                    throw killed(runId);
+                }
+                if (summary.status() == null || !isTerminal(summary.status())) {
+                    throw new IllegalStateException(
+                        "Browser Use run " + runId + " reported status " + status
+                            + " but the full run is " + summary.status()
+                            + ". Check the run in the Browser Use dashboard before starting another one."
+                    );
+                }
+                emitMetrics(runContext, summary);
+                if ("completed".equalsIgnoreCase(summary.status())) {
+                    logger.info("Browser Use run {} completed.", runId);
+                    return toOutput(runId, summary);
+                }
+                throw terminalFailure(runId, summary);
+            } catch (Exception e) {
+                // The run is already billed. Cancel it before the exception fails the task, including when a
+                // later Kestra retry would otherwise start a second run.
+                if (createdRunId != null) {
+                    dispatchRemoteCancel();
+                }
+                throw e;
             }
-            if (summary.status() == null || !isTerminal(summary.status())) {
-                throw new IllegalStateException(
-                    "Browser Use run " + runId + " reported status " + status
-                        + " but the full run is " + summary.status()
-                        + ". Check the run in the Browser Use dashboard before starting another one."
-                );
-            }
-            emitMetrics(runContext, summary);
-            if ("completed".equalsIgnoreCase(summary.status())) {
-                logger.info("Browser Use run {} completed.", runId);
-                return toOutput(runId, summary);
-            }
-            throw terminalFailure(runId, summary);
         }
     }
 

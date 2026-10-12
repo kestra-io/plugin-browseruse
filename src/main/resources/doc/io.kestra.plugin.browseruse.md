@@ -22,9 +22,9 @@ API v4 returns `result` as text and does not accept an output schema. Ask for JS
 
 ## Stop a run
 
-A client timeout does not cancel the agent, and a running agent keeps spending credits. When the Kestra execution is killed or times out, the task calls `POST /runs/{id}/cancel`.
+A client timeout does not cancel the agent, and a running agent keeps spending credits. The task calls `POST /runs/{id}/cancel` when the execution is killed or times out, and also when the task fails after the run has been created.
 
-`429` responses are retried and `Retry-After` is honored. The create call is not retried after a network error, because the run may already exist and a second call would start another billed run.
+`429` responses are retried and `Retry-After` is honored. Status and full-run reads also retry HTTP 5xx and network errors. `POST /runs` is not retried after a network error or a 5xx, because that call may already have created a billed run.
 
 ## Example
 

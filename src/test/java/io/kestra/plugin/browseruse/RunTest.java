@@ -159,6 +159,7 @@ class RunTest {
         assertThat(error.getMessage(), containsString("could not open the pricing page"));
         assertThat(metric(runContext, "input.token.count"), is(4d));
         assertThat(metric(runContext, "cost.usd"), closeTo(0.1d, 0.0000001d));
+        assertRunCancelled();
     }
 
     @Test
@@ -174,6 +175,7 @@ class RunTest {
 
         assertThat(error.getMessage(), containsString("was cancelled"));
         assertThat(error.getMessage(), containsString("stopped by the user"));
+        assertRunCancelled();
     }
 
     @Test
@@ -228,6 +230,7 @@ class RunTest {
 
         assertThat(error.getMessage(), containsString("not retried"));
         assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
+        assertThat(server.findAll(postRequestedFor(urlPathMatching(".*/cancel"))), empty());
     }
 
     @Test
@@ -244,6 +247,7 @@ class RunTest {
         assertThat(error.getMessage(), containsString("boom"));
         assertThat(error.getMessage(), containsString("may already exist"));
         assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
+        assertThat(server.findAll(postRequestedFor(urlPathMatching(".*/cancel"))), empty());
     }
 
     @Test
@@ -263,19 +267,93 @@ class RunTest {
     }
 
     @Test
-    void shouldNotRetryAFailedStatusRead() throws Exception {
+    void shouldRetryATransientStatusError() throws Exception {
         stubCreate();
         server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))
-            .willReturn(aResponse().withStatus(500).withBody("{\"detail\":\"status unavailable\"}")));
+            .inScenario("status")
+            .whenScenarioStateIs(Scenario.STARTED)
+            .willReturn(aResponse().withStatus(502).withHeader("Retry-After", "0").withBody("bad gateway"))
+            .willSetStateTo("ok"));
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))
+            .inScenario("status")
+            .whenScenarioStateIs("ok")
+            .willReturn(okJson("{\"status\":\"completed\"}")));
+        stubRun("completed", "ok", null, 1, 1, "0.000001");
+
+        var output = task(Property.ofValue("find the price")).run(runContextFactory.of());
+
+        assertThat(output.getResult(), is("ok"));
+        assertThat(server.findAll(getRequestedFor(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))), hasSize(2));
+        assertThat(server.findAll(postRequestedFor(urlPathMatching(".*/cancel"))), empty());
+    }
+
+    @Test
+    void shouldRetryATransientRunRead() throws Exception {
+        stubCreate();
+        stubStatus("completed");
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID))
+            .inScenario("read")
+            .whenScenarioStateIs(Scenario.STARTED)
+            .willReturn(aResponse().withStatus(502).withHeader("Retry-After", "0").withBody("bad gateway"))
+            .willSetStateTo("ok"));
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID))
+            .inScenario("read")
+            .whenScenarioStateIs("ok")
+            .willReturn(okJson("""
+                {
+                  "id": "%s",
+                  "status": "completed",
+                  "result": "ok",
+                  "totalInputTokens": 1,
+                  "totalOutputTokens": 1,
+                  "totalCostUsd": "0.000001"
+                }
+                """.formatted(RUN_ID))));
+
+        var output = task(Property.ofValue("find the price")).run(runContextFactory.of());
+
+        assertThat(output.getResult(), is("ok"));
+        assertThat(server.findAll(getRequestedFor(urlEqualTo("/api/v4/runs/" + RUN_ID))), hasSize(2));
+        assertThat(server.findAll(postRequestedFor(urlPathMatching(".*/cancel"))), empty());
+    }
+
+    @Test
+    void shouldRetryAStatusNetworkError() throws Exception {
+        stubCreate();
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))
+            .inScenario("status-io")
+            .whenScenarioStateIs(Scenario.STARTED)
+            .willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER))
+            .willSetStateTo("ok"));
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))
+            .inScenario("status-io")
+            .whenScenarioStateIs("ok")
+            .willReturn(okJson("{\"status\":\"completed\"}")));
+        stubRun("completed", "ok", null, 1, 1, "0.000001");
+
+        var output = task(Property.ofValue("find the price")).run(runContextFactory.of());
+
+        assertThat(output.getResult(), is("ok"));
+        assertThat(server.findAll(getRequestedFor(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))).size(), greaterThanOrEqualTo(2));
+        assertThat(server.findAll(postRequestedFor(urlPathMatching(".*/cancel"))), empty());
+    }
+
+    @Test
+    void shouldCancelTheRunWhenStatusKeepsFailing() throws Exception {
+        stubCreate();
+        server.stubFor(get(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))
+            .willReturn(aResponse().withStatus(502).withHeader("Retry-After", "0").withBody("bad gateway")));
 
         var error = assertThrows(
             IllegalStateException.class,
             () -> task(Property.ofValue("find the price")).run(runContextFactory.of())
         );
 
+        assertThat(error.getMessage(), containsString("502"));
         assertThat(error.getMessage(), containsString(RUN_ID));
-        assertThat(error.getMessage(), containsString("500"));
-        assertThat(server.findAll(getRequestedFor(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))), hasSize(1));
+        assertThat(server.findAll(getRequestedFor(urlEqualTo("/api/v4/runs/" + RUN_ID + "/status"))), hasSize(BrowserUseClient.MAX_ATTEMPTS));
+        assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
+        assertRunCancelled();
     }
 
     @Test
@@ -397,6 +475,10 @@ class RunTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    private void assertRunCancelled() throws InterruptedException {
+        waitUntil(() -> server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/" + RUN_ID + "/cancel"))).size() == 1);
     }
 
     private void waitUntil(java.util.function.BooleanSupplier condition) throws InterruptedException {
