@@ -18,7 +18,7 @@ Create an API key at [cloud.browser-use.com/settings](https://cloud.browser-use.
 
 A `failed` or `cancelled` run fails the task with the API error. Token counts and cost are also recorded as task metrics.
 
-API v4 returns `result` as text and does not accept an output schema. Ask for JSON in the prompt, then parse `{{ outputs.your_task.result }}` with `fromJson`.
+This task returns the agent's `result` text. Ask for JSON in the prompt, then parse `{{ outputs.your_task.result }}` with `fromJson`.
 
 ## Stop a run
 

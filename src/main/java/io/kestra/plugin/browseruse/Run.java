@@ -45,7 +45,7 @@ import lombok.experimental.SuperBuilder;
     description = "Gives a [Browser Use](https://browser-use.com) cloud agent a task in plain language, waits until the run finishes, and returns its answer. "
         + "The task creates a run, polls `GET /runs/{id}/status` until the run is completed, failed, or cancelled, then reads the full run once. "
         + "A failed or cancelled run fails the task. If the task fails after the run is created, it cancels that run so the agent does not keep spending credits. "
-        + "API v4 returns `result` as text. Ask for JSON in the prompt and parse it with `fromJson`. v4 does not accept an output schema."
+        + "The task returns the agent's `result` text. Ask for JSON in the prompt and parse it with `fromJson`."
 )
 @Plugin(
     examples = {
