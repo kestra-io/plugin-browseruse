@@ -1,0 +1,15 @@
+id: browseruse_timeout
+namespace: company.team
+
+inputs:
+  - id: baseUrl
+    type: STRING
+
+tasks:
+  - id: run
+    type: io.kestra.plugin.browseruse.Run
+    apiKey: "{{ secret('BROWSER_USE_API_KEY') }}"
+    baseUrl: "{{ inputs.baseUrl }}"
+    timeout: PT2S
+    pollInterval: PT1S
+    prompt: Keep checking the page until the task timeout cancels this run.

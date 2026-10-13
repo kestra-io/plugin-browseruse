@@ -39,14 +39,16 @@
 
 ## Why
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+- Some sites have no API, and the steps are hard to script ahead of time. A flow can ask a Browser Use cloud agent to open the page and answer in plain language.
+- The Browser Use API is asynchronous. Every flow would otherwise create a run, poll it, and fetch the result itself.
+- A killed or timed-out flow does not stop the agent, and a running agent keeps spending credits. This task cancels the remote run when the task is killed or times out. When the worker shuts down, the run keeps going during the grace period. If the worker then interrupts the task, that thread cancels the run before the worker exits.
+- It complements the Playwright plugin. Playwright is for scripted checks. Browser Use is for work you describe in natural language.
 
 ## What
 
-- Provides plugin components under `io.kestra.plugin.browseruse`.
-- Includes classes such as `Example`, `Trigger`.
+- `io.kestra.plugin.browseruse.Run` creates a Browser Use cloud run, polls until it finishes, and returns the answer, token counts, and cost.
+- Token counts are emitted as task metrics. Cost is returned on the task output.
+- Create an API key at [cloud.browser-use.com/settings](https://cloud.browser-use.com/settings?tab=api-keys) and pass it as `apiKey`, usually from a Kestra secret.
 
 ## Running Kestra locally with this plugin
 
