@@ -7,7 +7,7 @@
 ## Why
 
 - What user problem does this solve? Flows need a cloud browser agent for sites that have no API and cannot be scripted ahead of time, without each flow reimplementing the create, poll, and cancel loop.
-- Why would a team adopt this plugin in a workflow? `Run` waits for the agent, returns the answer and the cost, and cancels the remote run when the execution is killed or times out.
+- Why would a team adopt this plugin in a workflow? `Run` waits for the agent, returns the answer and the cost, and cancels the remote run when the task is killed or times out.
 - What operational/business outcome does it enable? Price and availability checks, and other unscripted browser work, stay in the same flow as the tasks that use the answer, and a stopped execution does not keep spending Browser Use credits.
 
 ## How

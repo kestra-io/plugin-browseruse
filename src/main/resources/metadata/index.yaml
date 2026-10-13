@@ -2,7 +2,7 @@ group: io.kestra.plugin.browseruse
 name: "browseruse"
 title: "Browser Use"
 description: "Run a Browser Use cloud agent and wait for its result."
-body: "Give a cloud browser agent a task in plain language. The task creates a run, polls until it finishes, and returns the answer, token counts, and cost. A killed or timed-out execution cancels the remote run so it does not keep spending credits."
+body: "Give a cloud browser agent a task in plain language. The task creates a run, polls until it finishes, and returns the answer, token counts, and cost. A killed or timed-out task cancels the remote run so it does not keep spending credits. When the worker shuts down, the run keeps going during the grace period, and the task thread cancels it if the worker then interrupts."
 videos: []
 createdBy: "Kestra Core Team"
 managedBy: "Kestra Core Team"

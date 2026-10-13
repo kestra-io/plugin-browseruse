@@ -28,9 +28,6 @@ import io.kestra.core.serializers.JacksonMapper;
 
 import org.slf4j.Logger;
 
-/**
- * Calls the Browser Use API v4. One client is opened per run and closed before the task returns.
- */
 final class BrowserUseClient implements AutoCloseable {
     static final int MAX_ATTEMPTS = 5;
     static final int CANCEL_ATTEMPTS = 3;
@@ -105,10 +102,7 @@ final class BrowserUseClient implements AutoCloseable {
         return send("GET", runPath(runId), null, "GET /runs/" + runId, false);
     }
 
-    /**
-     * Best-effort cancel. A 404 means the run is already gone.
-     * A 503 is retried twice, and {@code Retry-After} is read as a number of seconds.
-     */
+    // 404 means the run is already gone. A 503 is retried twice.
     void cancel(String runId) throws Exception {
         var label = "POST /runs/" + runId + "/cancel";
         var attempt = 1;
@@ -175,8 +169,7 @@ final class BrowserUseClient implements AutoCloseable {
                 continue;
             }
 
-            // GET is safe to repeat. POST /runs is not: a 5xx or a dropped response may already have created the run.
-            // 429 is retried for both. The HTTP client may also retry 429 once before this loop sees it.
+            // Do not retry POST /runs on 5xx: a lost response may already have created the run.
             if (retryStatus(result.code(), createCall)) {
                 if (attempt >= MAX_ATTEMPTS) {
                     throw httpFailure(label, result.code(), result.body(), createCall);
@@ -268,6 +261,12 @@ final class BrowserUseClient implements AutoCloseable {
         return delay.isNegative() ? Duration.ZERO : delay;
     }
 
+    static final class PauseInterrupted extends RuntimeException {
+        private PauseInterrupted() {
+            super("The wait was interrupted.");
+        }
+    }
+
     static void pause(Duration delay, BooleanSupplier stop) {
         var end = System.nanoTime() + delay.toNanos();
         while (System.nanoTime() < end) {
@@ -282,7 +281,7 @@ final class BrowserUseClient implements AutoCloseable {
                 Thread.sleep(Math.min(200L, remainingMs));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new KilledException("Task was killed");
+                throw new PauseInterrupted();
             }
         }
     }
@@ -335,7 +334,6 @@ final class BrowserUseClient implements AutoCloseable {
         return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
     }
 
-    // A transport error on POST /runs is not retried: the run may already exist, and a second call would bill twice.
     private static IllegalStateException transportFailure(String label, Exception exception, boolean createCall) {
         var reason = reason(exception);
         if (createCall) {

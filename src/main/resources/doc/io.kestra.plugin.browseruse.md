@@ -16,13 +16,13 @@ Create an API key at [cloud.browser-use.com/settings](https://cloud.browser-use.
 2. `GET /runs/{id}/status` is polled until the run is `completed`, `failed`, or `cancelled`.
 3. `GET /runs/{id}` reads the answer, the error, the token counts, and the cost once the run is terminal.
 
-A `failed` or `cancelled` run fails the task with the API error. Token counts and cost are also recorded as task metrics.
+A `failed` or `cancelled` run fails the task with the API error. Token counts are recorded as task metrics. The cost is returned on `totalCostUsd`.
 
 This task returns the agent's `result` text. Ask for JSON in the prompt, then parse `{{ outputs.your_task.result }}` with `fromJson`.
 
 ## Stop a run
 
-A client timeout does not cancel the agent, and a running agent keeps spending credits. The task calls `POST /runs/{id}/cancel` when the execution is killed or times out, and also when the task fails after the run has been created. A 503 from cancel is retried twice, and `Retry-After` is read as a number of seconds.
+A client timeout does not cancel the agent, and a running agent keeps spending credits. The task calls `POST /runs/{id}/cancel` when the task is killed or times out, and also when the task fails after the run has been created. When the worker shuts down, the run is left alone so it can finish during the grace period. If the worker then interrupts the task, that thread sends the cancel before the worker exits. A 503 from cancel is retried twice, and `Retry-After` is read as a number of seconds.
 
 `429` responses are retried and `Retry-After` is honored. Status and full-run reads also retry HTTP 5xx and network errors. `POST /runs` is not retried after a network error or a 5xx, because that call may already have created a billed run.
 

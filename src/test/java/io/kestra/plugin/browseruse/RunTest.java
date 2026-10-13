@@ -42,7 +42,6 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.allOf;
-import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
@@ -97,7 +96,7 @@ class RunTest {
         assertThat(metric(runContext, "input.token.count"), is(120d));
         assertThat(metric(runContext, "output.token.count"), is(30d));
         assertThat(metric(runContext, "total.token.count"), is(150d));
-        assertThat(metric(runContext, "cost.usd"), closeTo(0.0123d, 0.0000001d));
+        assertTrue(runContext.metrics().stream().noneMatch(metric -> "cost.usd".equals(metric.getName())));
 
         var body = createBody();
         assertThat(body.get("task").asText(), is("find the pro price"));
@@ -139,7 +138,6 @@ class RunTest {
 
         assertThat(output.getResult(), is("done"));
         assertThat(output.getTotalCostUsd(), is(new BigDecimal("0.5")));
-        assertThat(metric(runContext, "cost.usd"), closeTo(0.5d, 0.0000001d));
         var body = createBody();
         assertThat(body.get("task").asText(), is("find the pro price"));
         assertThat(body.get("model").asText(), is("gpt-6-luna"));
@@ -158,7 +156,6 @@ class RunTest {
         assertThat(error.getMessage(), containsString(RUN_ID));
         assertThat(error.getMessage(), containsString("could not open the pricing page"));
         assertThat(metric(runContext, "input.token.count"), is(4d));
-        assertThat(metric(runContext, "cost.usd"), closeTo(0.1d, 0.0000001d));
         assertRunCancelled();
     }
 
@@ -422,8 +419,55 @@ class RunTest {
     }
 
     @Test
-    void shouldCancelTheRunWhenStopped() throws Exception {
-        assertCancellation(Run::stop);
+    void shouldLeaveTheRunRunningWhenTheWorkerStops() throws Exception {
+        stubCreate();
+        stubRunningThenCompleted();
+        stubRun("completed", "{\"price_eur\":49}", null, 120, 30, "0.012300");
+
+        var task = task(Property.ofValue("find the price"));
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var future = executor.submit(() -> task.run(runContextFactory.of()));
+            waitUntil(() -> !server.findAll(getRequestedFor(urlPathMatching("/api/v4/runs/.*/status"))).isEmpty());
+            var started = System.nanoTime();
+            task.stop();
+            var elapsedMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+            assertTrue(elapsedMs < 500, "stop() blocked for " + elapsedMs + "ms");
+
+            var output = future.get(10, TimeUnit.SECONDS);
+            assertThat(output.getStatus(), is("completed"));
+            assertThat(output.getTotalCostUsd(), is(new BigDecimal("0.012300")));
+            Thread.sleep(300);
+            assertThat(server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/.*/cancel"))), empty());
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldCancelWhenTheWorkerInterruptsTheTask() throws Exception {
+        stubCreate();
+        server.stubFor(get(urlPathMatching("/api/v4/runs/" + RUN_ID + "/status"))
+            .willReturn(okJson("{\"status\":\"running\"}")));
+
+        var task = task(Property.ofValue("find the price"));
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var future = executor.submit(() -> task.run(runContextFactory.of()));
+            waitUntil(() -> !server.findAll(getRequestedFor(urlPathMatching("/api/v4/runs/.*/status"))).isEmpty());
+            Thread.sleep(100);
+            executor.shutdownNow();
+
+            var error = assertThrows(ExecutionException.class, () -> future.get(10, TimeUnit.SECONDS));
+            assertThat(error.getCause(), not(instanceOf(KilledException.class)));
+            assertThat(error.getCause().getMessage(), containsString(RUN_ID));
+            assertThat(error.getCause().getMessage(), containsString("worker shut down"));
+            assertThat(error.getCause().getMessage(), not(containsString("killed or timed out")));
+            waitUntil(() -> cancelCount() == 1);
+            assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -518,7 +562,7 @@ class RunTest {
             var started = System.nanoTime();
             signal.accept(task);
             var elapsedMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
-            assertTrue(elapsedMs < 500, "kill()/stop() blocked for " + elapsedMs + "ms");
+            assertTrue(elapsedMs < 500, "kill() blocked for " + elapsedMs + "ms");
             try {
                 future.get(10, TimeUnit.SECONDS);
                 throw new AssertionError("Run completed instead of being cancelled. Events: " + server.getAllServeEvents());
@@ -527,7 +571,7 @@ class RunTest {
             } catch (ExecutionException e) {
                 assertThat(e.getCause(), instanceOf(KilledException.class));
                 assertThat(e.getCause().getMessage(), containsString(RUN_ID));
-                assertThat(e.getCause().getMessage(), containsString("cancelled"));
+                assertThat(e.getCause().getMessage(), containsString("killed or timed out"));
             }
             waitUntil(() -> !server.findAll(postRequestedFor(urlPathMatching("/api/v4/runs/.*/cancel"))).isEmpty());
             assertThat(server.findAll(postRequestedFor(urlEqualTo("/api/v4/runs"))), hasSize(1));
