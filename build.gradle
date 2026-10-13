@@ -57,6 +57,8 @@ dependencies {
  **********************************************************************************************************************/
 test {
     useJUnitPlatform()
+    // Kestra OSS reads SECRET_* at startup and Base64-decodes the value. This is bu_test.
+    environment "SECRET_BROWSER_USE_API_KEY", "YnVfdGVzdA=="
 }
 
 dependencies {
