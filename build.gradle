@@ -29,7 +29,7 @@ java {
 }
 
 group = "io.kestra.plugin"
-description = 'Browser Use plugin for Kestra'
+description = 'Run Browser Use cloud agents from Kestra flows.'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
@@ -57,6 +57,8 @@ dependencies {
  **********************************************************************************************************************/
 test {
     useJUnitPlatform()
+    // Kestra OSS reads SECRET_* at startup and Base64-decodes the value. This is bu_test.
+    environment "SECRET_BROWSER_USE_API_KEY", "YnVfdGVzdA=="
 }
 
 dependencies {
@@ -87,6 +89,7 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter-engine"
     testImplementation "org.hamcrest:hamcrest"
     testImplementation "org.hamcrest:hamcrest-library"
+    testImplementation "org.wiremock:wiremock-jetty12"
 }
 
 /**********************************************************************************************************************\
