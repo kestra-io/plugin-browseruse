@@ -1,7 +1,7 @@
 @PluginSubGroup(
     title = "Browser Use",
-    description = "Browser Use plugin for Kestra",
-    categories = PluginSubGroup.PluginCategory.DATA
+    description = "Run a Browser Use cloud agent from a Kestra flow: give it a task in plain language, wait for the result, and cancel the run if the task is killed, times out, or fails after the run is created.",
+    categories = {PluginSubGroup.PluginCategory.AI}
 )
 package io.kestra.plugin.browseruse;
 
