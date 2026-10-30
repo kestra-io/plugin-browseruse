@@ -156,7 +156,7 @@ class RunTest {
         assertThat(error.getMessage(), containsString(RUN_ID));
         assertThat(error.getMessage(), containsString("could not open the pricing page"));
         assertThat(metric(runContext, "input.token.count"), is(4d));
-        assertRunCancelled();
+        assertThat(cancelCount(), is(0));
     }
 
     @Test
@@ -172,7 +172,7 @@ class RunTest {
 
         assertThat(error.getMessage(), containsString("was cancelled"));
         assertThat(error.getMessage(), containsString("stopped by the user"));
-        assertRunCancelled();
+        assertThat(cancelCount(), is(0));
     }
 
     @Test

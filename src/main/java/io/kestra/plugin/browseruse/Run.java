@@ -41,10 +41,12 @@ import lombok.experimental.SuperBuilder;
 @NoArgsConstructor
 @Schema(
     title = "Run a Browser Use cloud agent",
-    description = "Gives a [Browser Use](https://browser-use.com) cloud agent a task in plain language, waits until the run finishes, and returns its answer. "
-        + "The task creates a run, polls `GET /runs/{id}/status` until the run is completed, failed, or cancelled, then reads the full run once. "
-        + "A failed or cancelled run fails the task. If the task fails after the run is created, it cancels that run so the agent does not keep spending credits. "
-        + "The task returns the agent's `result` text. Ask for JSON in the prompt and parse it with `fromJson`."
+    description = """
+        Gives a [Browser Use](https://browser-use.com) cloud agent a task in plain language, waits until the run finishes, and returns its answer. \
+        The task creates a run, polls `GET /runs/{id}/status` until the run is completed, failed, or cancelled, then reads the full run once. \
+        A failed or cancelled run fails the task. If the task fails after the run is created, it cancels that run so the agent does not keep spending credits. \
+        The task returns the agent's `result` text. Ask for JSON in the prompt and parse it with `fromJson`. \
+        The task polls until the run ends, so set a task `timeout` or `maxCostUsd` to bound the time and the spend."""
 )
 @Plugin(
     examples = {
@@ -132,8 +134,9 @@ public class Run extends Task implements RunnableTask<Run.Output> {
 
     @Schema(
         title = "Instructions for the browser agent",
-        description = "What the agent should do, in plain language. The value is sent as the API `task` field. "
-            + "Ask for JSON in the text if a later task needs structured fields."
+        description = """
+            What the agent should do, in plain language. The value is sent as the API `task` field. \
+            Ask for JSON in the text if a later task needs structured fields."""
     )
     @NotNull
     @PluginProperty(group = "main")
@@ -141,8 +144,9 @@ public class Run extends Task implements RunnableTask<Run.Output> {
 
     @Schema(
         title = "Model",
-        description = "Optional model id, for example `gpt-6-luna`. Leave empty to use Browser Use's current default. "
-            + "The model list changes, so this is a free string rather than a fixed set."
+        description = """
+            Optional model id, for example `gpt-6-luna`. Leave empty to use Browser Use's current default. \
+            The model list changes, so this is a free string rather than a fixed set."""
     )
     @PluginProperty(group = "main")
     private Property<String> model;
@@ -156,8 +160,9 @@ public class Run extends Task implements RunnableTask<Run.Output> {
 
     @Schema(
         title = "Status poll interval",
-        description = "How long to wait between status reads. Defaults to 2 seconds. Minimum is 1 second and maximum is 5 minutes. "
-            + "Use an ISO-8601 duration, for example `PT2S`."
+        description = """
+            How long to wait between status reads. Defaults to 2 seconds. Minimum is 1 second and maximum is 5 minutes. \
+            Use an ISO-8601 duration, for example `PT2S`."""
     )
     @Builder.Default
     @PluginProperty(group = "execution")
@@ -188,6 +193,9 @@ public class Run extends Task implements RunnableTask<Run.Output> {
     public Output run(RunContext runContext) throws Exception {
         var taskLogger = runContext.logger();
         var config = renderConfig(runContext);
+        // A task retry reuses this instance: forget the previous attempt's run.
+        killable.set(null);
+        cancelDispatched.set(false);
         if (isKilled.get()) {
             throw new KilledException("Task was killed");
         }
@@ -202,6 +210,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
             Duration.ofSeconds(30)
         )) {
             String createdRunId = null;
+            var runReachedTerminal = false;
             try {
                 var created = client.createRun(config.prompt(), config.model(), config.maxCostUsd());
                 var id = created.id();
@@ -236,6 +245,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
                             + ". Check the run in the Browser Use dashboard before starting another one."
                     );
                 }
+                runReachedTerminal = true;
                 emitMetrics(runContext, summary);
                 if ("completed".equalsIgnoreCase(summary.status())) {
                     taskLogger.info("Browser Use run {} completed.", runId);
@@ -244,7 +254,7 @@ public class Run extends Task implements RunnableTask<Run.Output> {
                 throw terminalFailure(runId, summary);
             } catch (Exception e) {
                 // Cancel the billed run so a task retry does not start a second one.
-                if (createdRunId != null) {
+                if (createdRunId != null && !runReachedTerminal) {
                     if (e instanceof BrowserUseClient.PauseInterrupted && !isKilled.get()) {
                         cancelOnTaskThread();
                     } else {
